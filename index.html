@@ -334,17 +334,11 @@ function App() {
     setSubmitErr(null);
     const info = LANGS.find(l => l.code === code);
     try {
-      // Recargar preguntas y sesión por las dudas
       const [freshQs, s] = await Promise.all([fbLoadQuestions(), fbLoadSession()]);
       setQuestions(freshQs);
       const isOpen = s.open !== false;
       setSessionOpen(isOpen);
       const freshActive = freshQs.filter(q => q.active !== false);
-      if (!freshActive.length) {
-        // Sin preguntas: mostrar waiting (o done si cerrada)
-        if (!isOpen) { alert("Session is closed."); return; }
-      }
-      // Crear participante
       const id = await fbCreateParticipant({
         lang: code,
         lang_name: info?.full || code,
@@ -352,10 +346,9 @@ function App() {
       });
       setParticipantId(id);
       setAnswers({});
-      // Decidir pantalla
-      if (freshActive.length > 0) setScreen("survey");
-      else if (isOpen) setScreen("waiting");
-      else setScreen("done");
+      if (!isOpen) setScreen("done");
+      else if (freshActive.length > 0) setScreen("survey");
+      else setScreen("waiting");
     } catch (e) {
       alert("Could not start survey: " + e.message);
     }
