@@ -232,7 +232,8 @@ async function fbSetSession(open) {
 function App() {
   const [screen,    setScreen]    = useState("lang"); // lang | survey | waiting | done | adminLogin | admin
   const [lang,      setLang]      = useState("en");
-  const [answers,   setAnswers]   = useState({});
+  const [answers,      setAnswers]      = useState({});  // texto del textarea (incluye drafts)
+  const [submittedIds, setSubmittedIds] = useState(new Set()); // qIds ya enviados con botón
   const [questions, setQuestions] = useState([]);
   const [loadingQs, setLoadingQs] = useState(true);
 
@@ -254,10 +255,9 @@ function App() {
 
   const t = UI[lang] || UI.en;
   const activeQs = questions.filter(q => q.active !== false);
-  const answeredIds = new Set(Object.keys(answers));
-  const unansweredQs = activeQs.filter(q => !answeredIds.has(q.id));
+  const unansweredQs = activeQs.filter(q => !submittedIds.has(q.id));
   const currentQ = unansweredQs[0];
-  const answeredCount = activeQs.filter(q => answeredIds.has(q.id)).length;
+  const answeredCount = activeQs.filter(q => submittedIds.has(q.id)).length;
 
   const getLang = (q, lang) => {
     if (!q) return "";
@@ -317,7 +317,7 @@ function App() {
         const fresh = await fbLoadQuestions();
         setQuestions(fresh);
         const freshActive = fresh.filter(q => q.active !== false);
-        const freshUnanswered = freshActive.filter(q => !answeredIds.has(q.id));
+        const freshUnanswered = freshActive.filter(q => !submittedIds.has(q.id));
         if (freshUnanswered.length > 0) {
           setScreen("survey");
         }
@@ -326,7 +326,7 @@ function App() {
     check();
     pollRef.current = setInterval(check, 12000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [screen, JSON.stringify(Object.keys(answers))]); // re-create cuando cambian las claves
+  }, [screen, submittedIds]);
 
   // ── Survey flow ──
   // Unificado: si NO hay participante → crea uno nuevo. Si YA hay → cambia idioma.
@@ -359,6 +359,7 @@ function App() {
       });
       setParticipantId(id);
       setAnswers({});
+      setSubmittedIds(new Set());
       if (!isOpen) setScreen("done");
       else if (freshActive.length > 0) setScreen("survey");
       else setScreen("waiting");
@@ -381,8 +382,9 @@ function App() {
     setSubmitErr(null);
     try {
       await fbSaveAnswer(participantId, q.id, q.en, txt);
-      const newAnswers = { ...answers, [q.id]: txt };
-      setAnswers(newAnswers);
+      // Marcar la pregunta como ENVIADA (no solo como tipeada)
+      const newSubmitted = new Set([...submittedIds, q.id]);
+      setSubmittedIds(newSubmitted);
 
       // Recargar preguntas y sesión para decidir próximo paso
       const [freshQs, s] = await Promise.all([fbLoadQuestions(), fbLoadSession()]);
@@ -391,8 +393,7 @@ function App() {
       setSessionOpen(isOpen);
 
       const freshActive = freshQs.filter(q => q.active !== false);
-      const freshAnsweredIds = new Set(Object.keys(newAnswers));
-      const freshUnanswered = freshActive.filter(q => !freshAnsweredIds.has(q.id));
+      const freshUnanswered = freshActive.filter(q => !newSubmitted.has(q.id));
 
       if (freshUnanswered.length > 0) {
         // Quedan preguntas — el render mostrará la próxima automáticamente
@@ -410,7 +411,7 @@ function App() {
   };
 
   const reset = () => {
-    setAnswers({}); setParticipantId(null); setSubmitErr(null); setScreen("lang");
+    setAnswers({}); setSubmittedIds(new Set()); setParticipantId(null); setSubmitErr(null); setScreen("lang");
   };
 
   // ── Admin ──
