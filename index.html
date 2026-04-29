@@ -230,7 +230,7 @@ async function fbSetSession(open) {
 
 // ════════════ APP ════════════
 function App() {
-  const [screen,    setScreen]    = useState("lang"); // lang | langSwitch | survey | waiting | done | adminLogin | admin
+  const [screen,    setScreen]    = useState("lang"); // lang | survey | waiting | done | adminLogin | admin
   const [lang,      setLang]      = useState("en");
   const [answers,   setAnswers]   = useState({});
   const [questions, setQuestions] = useState([]);
@@ -329,10 +329,23 @@ function App() {
   }, [screen, JSON.stringify(Object.keys(answers))]); // re-create cuando cambian las claves
 
   // ── Survey flow ──
+  // Unificado: si NO hay participante → crea uno nuevo. Si YA hay → cambia idioma.
   const pickLang = async (code) => {
     setLang(code);
     setSubmitErr(null);
     const info = LANGS.find(l => l.code === code);
+
+    // Caso 1: cambiar idioma de un participante existente
+    if (participantId) {
+      try {
+        await fbUpdateParticipantLang(participantId, code, info?.full || code, info?.flag || "");
+      } catch (e) { console.error(e); }
+      // Volver a la pantalla apropiada
+      setScreen(currentQ ? "survey" : "waiting");
+      return;
+    }
+
+    // Caso 2: nuevo participante
     try {
       const [freshQs, s] = await Promise.all([fbLoadQuestions(), fbLoadSession()]);
       setQuestions(freshQs);
@@ -352,19 +365,6 @@ function App() {
     } catch (e) {
       alert("Could not start survey: " + e.message);
     }
-  };
-
-  // Cambiar idioma sin reiniciar el participante
-  const switchLang = async (code) => {
-    setLang(code);
-    if (participantId) {
-      const info = LANGS.find(l => l.code === code);
-      try {
-        await fbUpdateParticipantLang(participantId, code, info?.full || code, info?.flag || "");
-      } catch (e) { console.error(e); }
-    }
-    // Volver a la pantalla anterior
-    setScreen(currentQ ? "survey" : "waiting");
   };
 
   const changeAnswer = (val) => {
@@ -551,7 +551,7 @@ function App() {
   return (
     <div className="app">
 
-      {/* LANG */}
+      {/* LANG (welcome / cambio de idioma) */}
       {screen === "lang" && (
         <div className="center">
           <div style={{maxWidth:"720px",width:"100%"}}>
@@ -565,8 +565,9 @@ function App() {
               <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"12px"}}>
                 {LANGS.map(l => (
                   <button key={l.code} className="lb" onClick={() => pickLang(l.code)} style={{
-                    background:"#fff",border:`2px solid ${BD}`,borderRadius:"14px",
-                    padding:"24px 10px",cursor:"pointer",textAlign:"center",
+                    background:"#fff",
+                    border:`2px solid ${BD}`,
+                    borderRadius:"14px",padding:"24px 10px",cursor:"pointer",textAlign:"center",
                     color:"#1a3a26",boxShadow:"0 2px 8px rgba(27,107,58,.06)",transition:"all .2s",
                   }}>
                     <span style={{fontSize:"32px",display:"block",marginBottom:"8px"}}>{l.flag}</span>
@@ -575,41 +576,19 @@ function App() {
                 ))}
               </div>
             )}
-            <div style={{textAlign:"center",marginTop:"32px"}}>
-              <button onClick={() => setScreen("adminLogin")} style={{
-                background:"none",border:"none",color:"#7aaa88",fontSize:"13px",cursor:"pointer",fontWeight:"600",
-              }}>Admin →</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* LANG SWITCH (cambiar idioma sin perder progreso) */}
-      {screen === "langSwitch" && (
-        <div className="center">
-          <div style={{maxWidth:"720px",width:"100%"}}>
-            <div style={{textAlign:"center",marginBottom:"32px"}}>
-              <button onClick={() => setScreen(currentQ ? "survey" : "waiting")} style={{
-                background:"none",border:"none",color:"#7aaa88",fontSize:"13px",
-                cursor:"pointer",marginBottom:"16px",
-              }}>{t.back}</button>
-              <h2 style={{fontSize:"26px",fontWeight:"800",color:"#1a3a26"}}>{t.changeLang}</h2>
-              <p style={{color:"#7aaa88",fontSize:"14px",marginTop:"8px"}}>Your answers are kept — just pick a new language</p>
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"12px"}}>
-              {LANGS.map(l => (
-                <button key={l.code} className="lb" onClick={() => switchLang(l.code)} style={{
-                  background: lang === l.code ? "#f0faf4" : "#fff",
-                  border:`2px solid ${lang === l.code ? G : BD}`, borderRadius:"14px",
-                  padding:"20px 10px",cursor:"pointer",textAlign:"center",
-                  color:"#1a3a26",boxShadow:"0 2px 8px rgba(27,107,58,.06)",transition:"all .2s",
-                }}>
-                  <span style={{fontSize:"28px",display:"block",marginBottom:"8px"}}>{l.flag}</span>
-                  <span style={{fontSize:"13px",fontWeight:"700",display:"block"}}>{l.name}</span>
-                  {lang === l.code && <span style={{fontSize:"10px",color:G,display:"block",marginTop:"3px"}}>✓ Current</span>}
-                </button>
-              ))}
-            </div>
+            {!participantId ? (
+              <div style={{textAlign:"center",marginTop:"32px"}}>
+                <button onClick={() => setScreen("adminLogin")} style={{
+                  background:"none",border:"none",color:"#7aaa88",fontSize:"13px",cursor:"pointer",fontWeight:"600",
+                }}>Admin →</button>
+              </div>
+            ) : (
+              <div style={{textAlign:"center",marginTop:"32px"}}>
+                <button onClick={() => setScreen(currentQ ? "survey" : "waiting")} style={{
+                  background:"none",border:"none",color:"#7aaa88",fontSize:"13px",cursor:"pointer",fontWeight:"600",
+                }}>← Back</button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -620,7 +599,7 @@ function App() {
           <div style={{maxWidth:"600px",width:"100%"}}>
             {/* Top bar: change language */}
             <div style={{display:"flex",justifyContent:"flex-end",marginBottom:"20px"}}>
-              <button onClick={() => setScreen("langSwitch")} style={{
+              <button onClick={() => setScreen("lang")} style={{
                 background:"none",border:"none",color:"#7aaa88",fontSize:"13px",
                 cursor:"pointer",fontFamily:"inherit",
               }}>{t.changeLang}</button>
@@ -706,7 +685,7 @@ function App() {
         <div className="center">
           <div style={{maxWidth:"440px",width:"100%",textAlign:"center"}}>
             <div style={{display:"flex",justifyContent:"flex-end",marginBottom:"20px"}}>
-              <button onClick={() => setScreen("langSwitch")} style={{
+              <button onClick={() => setScreen("lang")} style={{
                 background:"none",border:"none",color:"#7aaa88",fontSize:"13px",cursor:"pointer",
               }}>{t.changeLang}</button>
             </div>
