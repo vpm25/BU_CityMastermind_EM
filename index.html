@@ -698,7 +698,7 @@ function App() {
             {(() => {
               const hasText = (answers[currentQ.id] || "").trim().length > 0;
               // Con texto: Submit ✓ (verde sólido). Sin texto: Skip → (outline)
-              const label = hasText ? `${t.submit} ✓` : `${t.skip} →`;
+              const label = hasText ? `${t.submit} ✓` : `${t.submit} →`;
               return (
                 <Btn className="nb" onClick={handleNext} disabled={saving}
                   style={{
