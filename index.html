@@ -755,8 +755,12 @@ function App() {
               fontSize:"34px",margin:"0 auto 24px",boxShadow:"0 8px 24px rgba(39,174,96,.3)",
             }}>✓</div>
             <h2 style={{fontSize:"34px",fontWeight:"800",marginBottom:"10px"}}>{t.thanks}</h2>
-            <p style={{color:"#7aaa88",fontSize:"15px",marginBottom:"32px"}}>{t.saved}</p>
-            <Btn onClick={reset}>{t.newP} →</Btn>
+            <p style={{color:"#7aaa88",fontSize:"15px"}}>{t.saved}</p>
+            <div style={{marginTop:"40px"}}>
+              <button onClick={() => { reset(); setScreen("adminLogin"); }} style={{
+                background:"none",border:"none",color:"#7aaa88",fontSize:"13px",cursor:"pointer",fontWeight:"600",
+              }}>Admin →</button>
+            </div>
           </div>
         </div>
       )}
