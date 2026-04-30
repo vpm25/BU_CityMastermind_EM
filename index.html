@@ -212,20 +212,37 @@ async function fbLoadSession() {
   const ref = FB.doc(FB.db, "meta", "session");
   const snap = await FB.getDoc(ref);
   if (!snap.exists()) {
-    // Crear con default open:true
-    await FB.setDoc(ref, { open: true, started_at: FB.serverTimestamp() });
-    return { open: true };
+    const initial = { open: false, current_question_id: null, current_question_data: null };
+    await FB.setDoc(ref, initial);
+    return initial;
   }
   return snap.data();
 }
 
-async function fbSetSession(open) {
+async function fbSetSession(data) {
   const FB = getFB();
   const ref = FB.doc(FB.db, "meta", "session");
-  await FB.setDoc(ref, {
-    open,
-    [open ? "started_at" : "ended_at"]: FB.serverTimestamp(),
-  }, { merge: true });
+  await FB.setDoc(ref, { ...data, last_update: FB.serverTimestamp() }, { merge: true });
+}
+
+// Mostrar una pregunta a todos los participantes (current). Abre la sesión si estaba cerrada.
+async function fbShowQuestion(q) {
+  await fbSetSession({
+    open: true,
+    current_question_id: q.id,
+    current_question_data: {
+      id: q.id, en: q.en, translations: q.translations || {},
+    },
+  });
+}
+
+// Terminar el survey: cerrar sesión, no hay pregunta actual.
+async function fbEndSurveyDoc() {
+  await fbSetSession({
+    open: false,
+    current_question_id: null,
+    current_question_data: null,
+  });
 }
 
 // ════════════ APP ════════════
@@ -241,7 +258,9 @@ function App() {
   const [saving,        setSaving]        = useState(false);
   const [submitErr,     setSubmitErr]     = useState(null);
 
-  const [sessionOpen,   setSessionOpen]   = useState(true);
+  // Session state — fuente única de verdad
+  const [session,       setSession]       = useState({ open: false, current_question_id: null, current_question_data: null });
+  const sessionOpen = session.open === true;
 
   // Admin
   const [pw,           setPw]           = useState("");
@@ -254,10 +273,12 @@ function App() {
   const [copied,       setCopied]       = useState(false);
 
   const t = UI[lang] || UI.en;
-  const activeQs = questions.filter(q => q.active !== false);
-  const unansweredQs = activeQs.filter(q => !submittedIds.has(q.id));
-  const currentQ = unansweredQs[0];
-  const answeredCount = activeQs.filter(q => submittedIds.has(q.id)).length;
+
+  // currentQ viene del session.current_question_data — fuente única para los participantes
+  const currentQ = (session.current_question_id && !submittedIds.has(session.current_question_id))
+    ? session.current_question_data
+    : null;
+  const answeredCount = submittedIds.size;
 
   const getLang = (q, lang) => {
     if (!q) return "";
@@ -281,7 +302,7 @@ function App() {
     (async () => {
       try {
         const s = await fbLoadSession();
-        setSessionOpen(s.open !== false);
+        setSession(s);
       } catch (e) { console.error(e); }
     })();
   }, []);
@@ -297,36 +318,68 @@ function App() {
     })();
   }, [screen, tab]);
 
-  // ── Polling on waiting screen: cada 12s revisar sesión + nuevas preguntas ──
+  // ── Polling EN SURVEY Y WAITING: cada 8-14s (con jitter) leer meta/session ──
+  // Solo 1 read por poll. Para 1200 personas distribuidas: ~120 reads/seg, perfectamente manejable.
+  // El jitter evita que las 1200 peticiones lleguen al mismo segundo.
   const pollRef = useRef(null);
+  const submittedRef = useRef(submittedIds);
+  const answersRef = useRef(answers);
+  const participantRef = useRef(participantId);
+  useEffect(() => { submittedRef.current = submittedIds; }, [submittedIds]);
+  useEffect(() => { answersRef.current = answers; }, [answers]);
+  useEffect(() => { participantRef.current = participantId; }, [participantId]);
+
   useEffect(() => {
-    if (screen !== "waiting") {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    const isParticipantScreen = screen === "survey" || screen === "waiting";
+    if (!isParticipantScreen) {
+      if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
       return;
     }
+    let cancelled = false;
     const check = async () => {
+      if (cancelled) return;
       try {
         const s = await fbLoadSession();
-        const isOpen = s.open !== false;
-        setSessionOpen(isOpen);
-        if (!isOpen) {
-          setScreen("done");
+        if (cancelled) return;
+        setSession(s);
+        // Sesión cerrada → done (después de auto-guardar pendiente)
+        if (s.open === false) {
+          // Si tenían texto sin enviar de la pregunta actual, guardarlo
+          const localCurrent = s.current_question_id;
+          if (localCurrent && participantRef.current && !submittedRef.current.has(localCurrent)) {
+            const txt = (answersRef.current[localCurrent] || "").trim();
+            try {
+              await fbSaveAnswer(participantRef.current, localCurrent, s.current_question_data?.en || "", txt);
+              setSubmittedIds(prev => new Set([...prev, localCurrent]));
+            } catch (e) { console.error(e); }
+          }
+          if (!cancelled) setScreen("done");
           return;
         }
-        // Recargar preguntas para detectar nuevas
-        const fresh = await fbLoadQuestions();
-        setQuestions(fresh);
-        const freshActive = fresh.filter(q => q.active !== false);
-        const freshUnanswered = freshActive.filter(q => !submittedIds.has(q.id));
-        if (freshUnanswered.length > 0) {
-          setScreen("survey");
+        // Hay pregunta actual? Si no la contesté → ir a survey
+        if (s.current_question_id && !submittedRef.current.has(s.current_question_id)) {
+          if (!cancelled) setScreen("survey");
+        } else {
+          // No hay pregunta o ya la contesté → waiting
+          if (!cancelled) setScreen("waiting");
         }
       } catch (e) { console.error(e); }
     };
+    // Run check immediately, then schedule with jitter
+    const schedule = () => {
+      const delay = 8000 + Math.random() * 6000; // 8-14 seg
+      pollRef.current = setTimeout(async () => {
+        await check();
+        if (!cancelled) schedule();
+      }, delay);
+    };
     check();
-    pollRef.current = setInterval(check, 12000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [screen, submittedIds]);
+    schedule();
+    return () => {
+      cancelled = true;
+      if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
+    };
+  }, [screen === "survey" || screen === "waiting"]);
 
   // ── Survey flow ──
   // Unificado: si NO hay participante → crea uno nuevo. Si YA hay → cambia idioma.
@@ -347,11 +400,8 @@ function App() {
 
     // Caso 2: nuevo participante
     try {
-      const [freshQs, s] = await Promise.all([fbLoadQuestions(), fbLoadSession()]);
-      setQuestions(freshQs);
-      const isOpen = s.open !== false;
-      setSessionOpen(isOpen);
-      const freshActive = freshQs.filter(q => q.active !== false);
+      const s = await fbLoadSession();
+      setSession(s);
       const id = await fbCreateParticipant({
         lang: code,
         lang_name: info?.full || code,
@@ -360,8 +410,9 @@ function App() {
       setParticipantId(id);
       setAnswers({});
       setSubmittedIds(new Set());
-      if (!isOpen) setScreen("done");
-      else if (freshActive.length > 0) setScreen("survey");
+      // Decidir pantalla según el estado de la sesión
+      if (s.open === false) setScreen("done");
+      else if (s.current_question_id) setScreen("survey");
       else setScreen("waiting");
     } catch (e) {
       alert("Could not start survey: " + e.message);
@@ -382,26 +433,24 @@ function App() {
     setSubmitErr(null);
     try {
       await fbSaveAnswer(participantId, q.id, q.en, txt);
-      // Marcar la pregunta como ENVIADA (no solo como tipeada)
+      // Marcar la pregunta como ENVIADA
       const newSubmitted = new Set([...submittedIds, q.id]);
       setSubmittedIds(newSubmitted);
 
-      // Recargar preguntas y sesión para decidir próximo paso
-      const [freshQs, s] = await Promise.all([fbLoadQuestions(), fbLoadSession()]);
-      setQuestions(freshQs);
-      const isOpen = s.open !== false;
-      setSessionOpen(isOpen);
+      // Recargar sesión para ver si admin ya cambió la pregunta o cerró el survey
+      const s = await fbLoadSession();
+      setSession(s);
 
-      const freshActive = freshQs.filter(q => q.active !== false);
-      const freshUnanswered = freshActive.filter(q => !newSubmitted.has(q.id));
-
-      if (freshUnanswered.length > 0) {
-        // Quedan preguntas — el render mostrará la próxima automáticamente
-      } else {
-        // Terminó todas las activas
+      if (s.open === false) {
         await fbMarkFinished(participantId);
-        if (isOpen) setScreen("waiting");
-        else setScreen("done");
+        setScreen("done");
+      } else if (s.current_question_id && !newSubmitted.has(s.current_question_id)) {
+        // Hay nueva pregunta para mostrar — el render lo hace solo (currentQ se recalcula)
+        // Solo nos aseguramos de estar en "survey"
+        setScreen("survey");
+      } else {
+        // No hay pregunta nueva o ya la contesté → waiting
+        setScreen("waiting");
       }
     } catch (e) {
       setSubmitErr(e.message || "Could not save — please try again");
@@ -423,12 +472,32 @@ function App() {
     setPw(""); setScreen("admin");
   };
 
-  const toggleSession = async () => {
-    const next = !sessionOpen;
-    if (!next && !window.confirm("Close the session? Participants currently waiting will be sent to the thank-you screen.")) return;
+  const endSurvey = async () => {
+    if (!window.confirm("End the survey?\n\nParticipants will see the thank-you screen.")) return;
     try {
-      await fbSetSession(next);
-      setSessionOpen(next);
+      await fbEndSurveyDoc();
+      setSession({ open: false, current_question_id: null, current_question_data: null });
+    } catch (e) { alert("Error: " + e.message); }
+  };
+
+  // Mostrar una pregunta a todos los participantes
+  const showQuestion = async (q) => {
+    try {
+      await fbShowQuestion(q);
+      setSession(prev => ({
+        ...prev,
+        open: true,
+        current_question_id: q.id,
+        current_question_data: { id: q.id, en: q.en, translations: q.translations || {} },
+      }));
+    } catch (e) { alert("Error: " + e.message); }
+  };
+
+  // Pausar (volver a "waiting" sin cerrar el survey)
+  const hideQuestion = async () => {
+    try {
+      await fbSetSession({ current_question_id: null, current_question_data: null });
+      setSession(prev => ({ ...prev, current_question_id: null, current_question_data: null }));
     } catch (e) { alert("Error: " + e.message); }
   };
 
@@ -436,18 +505,12 @@ function App() {
     if (!newQText.trim() || questions.length >= 20) return;
     setSavingQ(true);
     try {
-      const newQ = { en: newQText.trim(), translations: {}, active: true, order: questions.length };
+      const newQ = { en: newQText.trim(), translations: {}, order: questions.length };
       const id = await fbSaveQuestion(newQ);
       setQuestions(prev => [...prev, { id, ...newQ }]);
       setNewQText("");
     } catch (e) { alert("Error: " + e.message); }
     finally { setSavingQ(false); }
-  };
-
-  const toggleQ = async (q) => {
-    const updated = { ...q, active: q.active === false };
-    setQuestions(prev => prev.map(x => x.id === q.id ? updated : x));
-    try { await fbSaveQuestion(updated); } catch (e) { alert("Error: " + e.message); }
   };
 
   const deleteQ = async (q) => {
@@ -464,6 +527,14 @@ function App() {
     try {
       await fbSaveQuestion(editQ);
       setQuestions(prev => prev.map(x => x.id === editQ.id ? editQ : x));
+      // Si esta pregunta está siendo mostrada, actualizar también la session
+      if (session.current_question_id === editQ.id) {
+        await fbShowQuestion(editQ);
+        setSession(prev => ({
+          ...prev,
+          current_question_data: { id: editQ.id, en: editQ.en, translations: editQ.translations || {} },
+        }));
+      }
       setEditQ(null);
     } catch (e) { alert("Error: " + e.message); }
     finally { setSavingQ(false); }
@@ -598,25 +669,6 @@ function App() {
               }}>{t.changeLang}</button>
             </div>
 
-            {/* Progress */}
-            <div style={{marginBottom:"32px"}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:"10px"}}>
-                <span style={{fontSize:"11px",letterSpacing:"2px",textTransform:"uppercase",color:"#7aaa88",fontWeight:"600"}}>
-                  {t.q} {answeredCount+1} / {activeQs.length}
-                </span>
-                <span style={{fontSize:"12px",color:G,fontWeight:"700"}}>
-                  {Math.round(((answeredCount+1)/activeQs.length)*100)}%
-                </span>
-              </div>
-              <div style={{height:"6px",background:BD,borderRadius:"6px",overflow:"hidden"}}>
-                <div style={{
-                  height:"100%",width:`${((answeredCount+1)/activeQs.length)*100}%`,
-                  background:`linear-gradient(90deg,${DG},${G})`,
-                  borderRadius:"6px",transition:"width .5s ease",
-                }} />
-              </div>
-            </div>
-
             <p style={{fontSize:"11px",letterSpacing:"3px",textTransform:"uppercase",color:G,marginBottom:"14px",fontWeight:"700"}}>
               {t.q} {String(answeredCount+1).padStart(2,"0")}
             </p>
@@ -644,21 +696,16 @@ function App() {
             )}
 
             {(() => {
-              const isLast = unansweredQs.length === 1;
               const hasText = (answers[currentQ.id] || "").trim().length > 0;
-              // Última pregunta: SIEMPRE Submit (con texto o sin)
-              // Otras: Next si hay texto, Skip si está vacío
-              const label = isLast
-                ? `${t.submit} ✓`
-                : (hasText ? `${t.next} →` : `${t.skip} →`);
-              const useSolid = hasText || isLast; // Submit siempre verde sólido
+              // Con texto: Submit ✓ (verde sólido). Sin texto: Skip → (outline)
+              const label = hasText ? `${t.submit} ✓` : `${t.skip} →`;
               return (
                 <Btn className="nb" onClick={handleNext} disabled={saving}
                   style={{
                     width:"100%",marginTop:"16px",padding:"17px",fontSize:"14px",
-                    background: useSolid ? `linear-gradient(135deg,${DG},${G})` : "#fff",
-                    color: useSolid ? "#fff" : DG,
-                    border: useSolid ? "none" : `2px solid ${BD}`,
+                    background: hasText ? `linear-gradient(135deg,${DG},${G})` : "#fff",
+                    color: hasText ? "#fff" : DG,
+                    border: hasText ? "none" : `2px solid ${BD}`,
                     boxShadow: "none",
                   }}>
                   {saving ? "..." : label}
@@ -759,36 +806,56 @@ function App() {
             }}>← Back to Survey</button>
           </div>
 
-          {/* Session Toggle */}
+          {/* Status & End button */}
           <div style={{
             background:"#fff",border:`2px solid ${sessionOpen ? BD : "#fcc"}`,
-            borderRadius:"14px",padding:"16px 20px",marginBottom:"24px",
-            display:"flex",alignItems:"center",justifyContent:"space-between",gap:"14px",
+            borderRadius:"14px",padding:"14px 18px",marginBottom:"24px",
+            display:"flex",alignItems:"center",justifyContent:"space-between",gap:"14px",flexWrap:"wrap",
           }}>
-            <div>
-              <div style={{fontSize:"11px",letterSpacing:"2px",textTransform:"uppercase",color:"#7aaa88",fontWeight:"700",marginBottom:"4px"}}>
-                Session Status
-              </div>
-              <div style={{fontSize:"18px",fontWeight:"800",color: sessionOpen ? DG : "#c0392b"}}>
-                {sessionOpen ? "🟢 OPEN" : "🔴 CLOSED"}
-              </div>
-              <div style={{fontSize:"12px",color:"#7aaa88",marginTop:"4px"}}>
-                {sessionOpen
-                  ? "Participants who finish are sent to the waiting screen."
-                  : "Participants who finish see the thank-you screen."}
-              </div>
+            <div style={{fontSize:"13px",flex:1,minWidth:"200px"}}>
+              {!sessionOpen ? (
+                <>
+                  <span style={{color:"#c0392b",fontWeight:"700"}}>🔴 Survey ended</span>
+                  <span style={{color:"#7aaa88",marginLeft:"10px",fontSize:"12px"}}>
+                    Press ▶ Show on any question to start.
+                  </span>
+                </>
+              ) : session.current_question_id ? (
+                <>
+                  <span style={{color:DG,fontWeight:"700"}}>🟢 Showing now:</span>
+                  <span style={{color:"#1a3a26",marginLeft:"8px",fontSize:"13px",fontWeight:"600"}}>
+                    "{(session.current_question_data?.en || "").slice(0, 80)}"
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span style={{color:DG,fontWeight:"700"}}>🟢 Survey is live</span>
+                  <span style={{color:"#7aaa88",marginLeft:"10px",fontSize:"12px"}}>
+                    Participants are waiting. Press ▶ Show on a question.
+                  </span>
+                </>
+              )}
             </div>
-            <button onClick={toggleSession} style={{
-              padding:"12px 22px",borderRadius:"10px",fontWeight:"800",fontSize:"13px",
-              cursor:"pointer",border:"none",
-              background: sessionOpen ? "#fff2f2" : `linear-gradient(135deg,${DG},${G})`,
-              color: sessionOpen ? "#c0392b" : "#fff",
-              border: sessionOpen ? "2px solid #faa" : "none",
-              boxShadow: sessionOpen ? "none" : "0 4px 15px rgba(39,174,96,.25)",
-              transition:"all .2s",
-            }}>
-              {sessionOpen ? "🔴 Close Session" : "🟢 Open Session"}
-            </button>
+            <div style={{display:"flex",gap:"8px"}}>
+              {sessionOpen && session.current_question_id && (
+                <button onClick={hideQuestion} style={{
+                  padding:"8px 14px",borderRadius:"10px",fontWeight:"700",fontSize:"12px",
+                  cursor:"pointer",background:"#fff8f0",color:"#c0620b",
+                  border:"2px solid #fcc",transition:"all .2s",
+                }}>
+                  ⏸ Pause (back to waiting)
+                </button>
+              )}
+              {sessionOpen && (
+                <button onClick={endSurvey} style={{
+                  padding:"8px 14px",borderRadius:"10px",fontWeight:"800",fontSize:"12px",
+                  cursor:"pointer",background:"#fff2f2",color:"#c0392b",
+                  border:"2px solid #faa",transition:"all .2s",
+                }}>
+                  🔴 End Survey
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Tabs */}
@@ -991,16 +1058,29 @@ function App() {
                         </div>
                       </div>
                     ) : (
-                      <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:"10px",
+                        background: session.current_question_id === q.id ? LG : "transparent",
+                        margin: session.current_question_id === q.id ? "-4px -8px" : "0",
+                        padding: session.current_question_id === q.id ? "10px 12px" : "0",
+                        borderRadius: session.current_question_id === q.id ? "8px" : "0",
+                      }}>
                         <span style={{
                           fontSize:"11px",fontWeight:"800",color:DG,
-                          background:LG,padding:"4px 8px",borderRadius:"6px",
+                          background: session.current_question_id === q.id ? "#fff" : LG,
+                          padding:"4px 8px",borderRadius:"6px",
                         }}>Q{i+1}</span>
                         <div style={{flex:1,fontSize:"14px",color:"#1a3a26"}}>{q.en}</div>
-                        <SmallBtn onClick={() => toggleQ(q)}
-                          color={q.active === false ? "white" : "green"}>
-                          {q.active === false ? "○ Off" : "● On"}
-                        </SmallBtn>
+                        {session.current_question_id === q.id ? (
+                          <span style={{
+                            fontSize:"10px",fontWeight:"800",color:DG,letterSpacing:"1px",
+                            background:"#fff",padding:"5px 10px",borderRadius:"6px",
+                            border:`2px solid ${G}`,
+                          }}>● SHOWING</span>
+                        ) : (
+                          <SmallBtn onClick={() => showQuestion(q)} color="green">
+                            ▶ Show
+                          </SmallBtn>
+                        )}
                         <SmallBtn onClick={() => setEditQ({
                           ...q, translations: { ...(q.translations || {}) },
                         })}>✏️ Edit</SmallBtn>
