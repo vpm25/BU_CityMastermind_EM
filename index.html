@@ -271,6 +271,8 @@ function App() {
   const [newQText,     setNewQText]     = useState("");
   const [savingQ,      setSavingQ]      = useState(false);
   const [copied,       setCopied]       = useState(false);
+  const [viewMode,     setViewMode]     = useState("question");  // "participant" | "question"
+  const [expandedIds,  setExpandedIds]  = useState(new Set());   // Set de ids expandidos
 
   const t = UI[lang] || UI.en;
 
@@ -896,12 +898,44 @@ function App() {
                 </div>
               )}
 
+              {/* View toggle */}
+              <div style={{
+                display:"flex",gap:"4px",marginBottom:"16px",
+                background:"#fff",border:`2px solid ${BD}`,borderRadius:"10px",padding:"4px",width:"fit-content",
+              }}>
+                {[
+                  {id:"question",    label:"📝 By Question"},
+                  {id:"participant", label:"👤 By Participant"},
+                ].map(v => (
+                  <button key={v.id} onClick={() => { setViewMode(v.id); setExpandedIds(new Set()); }} style={{
+                    padding:"8px 16px",border:"none",borderRadius:"7px",fontSize:"12px",fontWeight:"700",
+                    cursor:"pointer",transition:"all .2s",
+                    background: viewMode === v.id ? `linear-gradient(135deg,${DG},${G})` : "transparent",
+                    color: viewMode === v.id ? "#fff" : "#7aaa88",
+                  }}>{v.label}</button>
+                ))}
+              </div>
+
               <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"20px"}}>
                 <SmallBtn onClick={exportCSV} disabled={!participants.length}>📥 Export CSV</SmallBtn>
                 <SmallBtn onClick={copyTable} disabled={!participants.length}>
                   {copied ? "✓ Copied!" : "📋 Copy as table"}
                 </SmallBtn>
                 <SmallBtn onClick={reload}>🔄 Reload</SmallBtn>
+                {((viewMode === "participant" && participants.length > 0) ||
+                  (viewMode === "question" && questions.length > 0)) && (
+                  <>
+                    <SmallBtn color="white" onClick={() => {
+                      const all = viewMode === "participant"
+                        ? new Set(participants.map(p => p.id))
+                        : new Set(questions.map(q => q.id));
+                      setExpandedIds(all);
+                    }}>⊞ Expand all</SmallBtn>
+                    <SmallBtn color="white" onClick={() => setExpandedIds(new Set())}>
+                      ⊟ Collapse all
+                    </SmallBtn>
+                  </>
+                )}
                 <div style={{flex:1}} />
                 <SmallBtn onClick={deleteAll} disabled={!participants.length} color="red">🗑 Delete all</SmallBtn>
               </div>
@@ -911,8 +945,173 @@ function App() {
                   textAlign:"center",padding:"60px 20px",
                   background:"#fff",border:`2px dashed ${BD}`,borderRadius:"14px",color:"#7aaa88",
                 }}>No responses yet.</div>
-              ) : (
+              ) : viewMode === "question" ? (
+                /* ─── BY QUESTION ─── */
                 <div style={{display:"flex",flexDirection:"column",gap:"14px"}}>
+                  {questions.length === 0 ? (
+                    <div style={{
+                      textAlign:"center",padding:"40px 20px",
+                      background:"#fff",border:`2px dashed ${BD}`,borderRadius:"14px",color:"#7aaa88",
+                    }}>No questions defined. Switch to "By Participant" to see orphan answers.</div>
+                  ) : questions.map((q, qi) => {
+                    // Filtrar participantes que TIENEN respuesta para esta pregunta (no undefined)
+                    const responses = participants
+                      .filter(p => (p.answers || {})[q.id] !== undefined)
+                      .map(p => ({
+                        pid: p.id, lang: p.lang_name || p.lang, flag: p.flag,
+                        answer: p.answers[q.id], time: p.started_at_display,
+                      }));
+                    const withText = responses.filter(r => r.answer && r.answer.trim());
+                    const skipped = responses.length - withText.length;
+                    const isExpanded = expandedIds.has(q.id);
+                    return (
+                      <div key={q.id} style={{
+                        background:"#fff",border:`2px solid ${BD}`,borderRadius:"14px",
+                        boxShadow:"0 2px 8px rgba(27,107,58,.05)",overflow:"hidden",
+                      }}>
+                        <div onClick={() => {
+                          const next = new Set(expandedIds);
+                          if (next.has(q.id)) next.delete(q.id); else next.add(q.id);
+                          setExpandedIds(next);
+                        }} style={{
+                          padding:"16px 18px",cursor:"pointer",display:"flex",
+                          alignItems:"center",justifyContent:"space-between",gap:"10px",
+                          background: isExpanded ? LG : "#fff",
+                          transition:"background .2s",
+                        }}>
+                          <div style={{display:"flex",alignItems:"center",gap:"12px",flex:1,minWidth:0}}>
+                            <span style={{
+                              fontSize:"11px",fontWeight:"800",color:DG,
+                              background:LG,padding:"4px 8px",borderRadius:"6px",flexShrink:0,
+                            }}>Q{qi+1}</span>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:"14px",fontWeight:"700",color:"#1a3a26",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                {q.en}
+                              </div>
+                              <div style={{fontSize:"11px",color:"#7aaa88",marginTop:"2px"}}>
+                                {withText.length} answered · {skipped} skipped
+                              </div>
+                            </div>
+                          </div>
+                          <span style={{fontSize:"14px",color:"#7aaa88",flexShrink:0}}>
+                            {isExpanded ? "▲" : "▼"}
+                          </span>
+                        </div>
+
+                        {isExpanded && (
+                          <div style={{padding:"6px 18px 18px",display:"flex",flexDirection:"column",gap:"8px"}}>
+                            {responses.length === 0 ? (
+                              <p style={{fontSize:"12px",color:"#bbb",fontStyle:"italic",padding:"8px 0"}}>
+                                No participant has reached this question yet.
+                              </p>
+                            ) : responses.map((r, ri) => (
+                              <div key={r.pid} style={{
+                                padding:"10px 12px",
+                                background: r.answer && r.answer.trim() ? LG : "#fafafa",
+                                borderRadius:"8px",
+                                borderLeft: r.answer && r.answer.trim() ? `3px solid ${G}` : `3px solid #ddd`,
+                              }}>
+                                <div style={{fontSize:"11px",color:"#7aaa88",marginBottom:"4px",fontWeight:"600"}}>
+                                  {r.flag || "🏳️"} {r.lang}
+                                </div>
+                                <div style={{
+                                  fontSize:"13px",lineHeight:"1.5",
+                                  color: r.answer && r.answer.trim() ? "#1a3a26" : "#bbb",
+                                  fontStyle: r.answer && r.answer.trim() ? "normal" : "italic",
+                                }}>
+                                  {r.answer && r.answer.trim() ? r.answer : "(skipped)"}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Sección de orphans (preguntas borradas) */}
+                  {(() => {
+                    const liveIds = new Set(questions.map(q => q.id));
+                    const orphanMap = new Map(); // qId -> { snapshot, answers: [] }
+                    for (const p of participants) {
+                      for (const qId of Object.keys(p.answers || {})) {
+                        if (liveIds.has(qId)) continue;
+                        if (!orphanMap.has(qId)) {
+                          orphanMap.set(qId, {
+                            snapshot: (p.question_snapshots || {})[qId] || `(deleted question)`,
+                            answers: [],
+                          });
+                        }
+                        orphanMap.get(qId).answers.push({
+                          pid: p.id, lang: p.lang_name || p.lang, flag: p.flag,
+                          answer: p.answers[qId],
+                        });
+                      }
+                    }
+                    if (orphanMap.size === 0) return null;
+                    return Array.from(orphanMap.entries()).map(([qId, data]) => {
+                      const isExpanded = expandedIds.has(qId);
+                      const withText = data.answers.filter(r => r.answer && r.answer.trim());
+                      return (
+                        <div key={qId} style={{
+                          background:"#fff8f0",border:`2px dashed #fcc`,borderRadius:"14px",overflow:"hidden",
+                        }}>
+                          <div onClick={() => {
+                            const next = new Set(expandedIds);
+                            if (next.has(qId)) next.delete(qId); else next.add(qId);
+                            setExpandedIds(next);
+                          }} style={{
+                            padding:"14px 18px",cursor:"pointer",display:"flex",
+                            alignItems:"center",justifyContent:"space-between",gap:"10px",
+                          }}>
+                            <div style={{display:"flex",alignItems:"center",gap:"12px",flex:1,minWidth:0}}>
+                              <span style={{
+                                fontSize:"10px",fontWeight:"800",color:"#c0620b",
+                                background:"#fff",padding:"4px 8px",borderRadius:"6px",flexShrink:0,
+                                border:"1px solid #fcc",
+                              }}>DELETED</span>
+                              <div style={{flex:1,minWidth:0}}>
+                                <div style={{fontSize:"13px",fontWeight:"600",color:"#3a5a46",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                  {data.snapshot}
+                                </div>
+                                <div style={{fontSize:"11px",color:"#c0620b",marginTop:"2px"}}>
+                                  {withText.length} answered · {data.answers.length - withText.length} skipped
+                                </div>
+                              </div>
+                            </div>
+                            <span style={{fontSize:"14px",color:"#7aaa88",flexShrink:0}}>
+                              {isExpanded ? "▲" : "▼"}
+                            </span>
+                          </div>
+                          {isExpanded && (
+                            <div style={{padding:"6px 18px 18px",display:"flex",flexDirection:"column",gap:"8px"}}>
+                              {data.answers.map(r => (
+                                <div key={r.pid} style={{
+                                  padding:"10px 12px",background:"#fff",borderRadius:"8px",
+                                  borderLeft: r.answer && r.answer.trim() ? `3px solid ${G}` : `3px solid #ddd`,
+                                }}>
+                                  <div style={{fontSize:"11px",color:"#7aaa88",marginBottom:"4px",fontWeight:"600"}}>
+                                    {r.flag || "🏳️"} {r.lang}
+                                  </div>
+                                  <div style={{
+                                    fontSize:"13px",lineHeight:"1.5",
+                                    color: r.answer && r.answer.trim() ? "#1a3a26" : "#bbb",
+                                    fontStyle: r.answer && r.answer.trim() ? "normal" : "italic",
+                                  }}>
+                                    {r.answer && r.answer.trim() ? r.answer : "(skipped)"}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              ) : (
+                /* ─── BY PARTICIPANT ─── */
+                <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
                   {participants.map((p, idx) => {
                     const liveIds = new Set(questions.map(q => q.id));
                     const orphanItems = Object.keys(p.answers || {})
@@ -922,25 +1121,38 @@ function App() {
                         text: (p.question_snapshots || {})[qId] || "(deleted question)",
                         answer: p.answers[qId],
                       }));
+                    // Solo preguntas vivas que el participante haya CONTESTADO
+                    const answeredLive = questions.filter(q => (p.answers || {})[q.id] !== undefined);
+                    const totalAnswered = answeredLive.length + orphanItems.length;
                     const completed = questions.length > 0 && questions.every(q => (p.answers || {})[q.id] !== undefined);
+                    const isExpanded = expandedIds.has(p.id);
                     return (
                       <div key={p.id} style={{
                         background:"#fff",border:`2px solid ${BD}`,borderRadius:"14px",
-                        padding:"18px",boxShadow:"0 2px 8px rgba(27,107,58,.05)",
+                        boxShadow:"0 2px 8px rgba(27,107,58,.05)",overflow:"hidden",
                       }}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"12px",gap:"10px"}}>
-                          <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
-                            <span style={{fontSize:"22px"}}>{p.flag || "🏳️"}</span>
-                            <div>
-                              <div style={{fontSize:"15px",fontWeight:"800",color:DG}}>
+                        <div onClick={() => {
+                          const next = new Set(expandedIds);
+                          if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                          setExpandedIds(next);
+                        }} style={{
+                          padding:"14px 18px",cursor:"pointer",display:"flex",
+                          alignItems:"center",justifyContent:"space-between",gap:"10px",
+                          background: isExpanded ? LG : "#fff",
+                          transition:"background .2s",
+                        }}>
+                          <div style={{display:"flex",alignItems:"center",gap:"12px",flex:1,minWidth:0}}>
+                            <span style={{fontSize:"22px",flexShrink:0}}>{p.flag || "🏳️"}</span>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:"14px",fontWeight:"800",color:DG}}>
                                 #{idx+1} · {p.lang_name || p.lang}
                               </div>
                               <div style={{fontSize:"11px",color:"#7aaa88"}}>
-                                Started: {p.started_at_display}
+                                {totalAnswered} answer{totalAnswered === 1 ? "" : "s"} · {p.started_at_display}
                               </div>
                             </div>
                           </div>
-                          <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+                          <div style={{display:"flex",gap:"8px",alignItems:"center",flexShrink:0}}>
                             <span style={{
                               fontSize:"10px",fontWeight:"700",letterSpacing:"1px",
                               padding:"4px 9px",borderRadius:"6px",
@@ -950,55 +1162,68 @@ function App() {
                             }}>
                               {completed ? "✓ COMPLETED" : "⏳ INCOMPLETE"}
                             </span>
-                            <button onClick={() => deletePart(p.id)} title="Delete participant" style={{
+                            <button onClick={e => { e.stopPropagation(); deletePart(p.id); }} title="Delete participant" style={{
                               background:"none",border:"none",color:"#c0392b",
                               cursor:"pointer",fontSize:"16px",padding:"0 4px",
                             }}>🗑</button>
+                            <span style={{fontSize:"14px",color:"#7aaa88"}}>
+                              {isExpanded ? "▲" : "▼"}
+                            </span>
                           </div>
                         </div>
 
-                        <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
-                          {questions.map((q, qi) => {
-                            const a = (p.answers || {})[q.id];
-                            const hasAnswer = a !== undefined && a !== null;
-                            return (
-                              <div key={q.id} style={{
-                                padding:"12px 14px",
-                                background: hasAnswer && a ? LG : "#fafafa",
-                                borderRadius:"10px",
-                                borderLeft: hasAnswer && a ? `3px solid ${G}` : `3px solid #ddd`,
-                              }}>
-                                <div style={{fontSize:"12px",color:"#7aaa88",fontWeight:"600",marginBottom:"6px"}}>
-                                  Q{qi+1}: {q.en}
-                                </div>
-                                <div style={{
-                                  fontSize:"14px",lineHeight:"1.55",
-                                  color: hasAnswer && a ? "#1a3a26" : "#bbb",
-                                  fontStyle: hasAnswer && a ? "normal" : "italic",
-                                }}>
-                                  {hasAnswer ? (a || "(skipped)") : "(not yet answered)"}
-                                </div>
-                              </div>
-                            );
-                          })}
+                        {isExpanded && (
+                          <div style={{padding:"6px 18px 18px",display:"flex",flexDirection:"column",gap:"8px"}}>
+                            {answeredLive.length === 0 && orphanItems.length === 0 ? (
+                              <p style={{fontSize:"12px",color:"#bbb",fontStyle:"italic",padding:"8px 0"}}>
+                                This participant hasn't answered any question yet.
+                              </p>
+                            ) : (
+                              <>
+                                {answeredLive.map(q => {
+                                  const a = p.answers[q.id];
+                                  const qi = questions.findIndex(x => x.id === q.id);
+                                  return (
+                                    <div key={q.id} style={{
+                                      padding:"10px 12px",
+                                      background: a && a.trim() ? LG : "#fafafa",
+                                      borderRadius:"8px",
+                                      borderLeft: a && a.trim() ? `3px solid ${G}` : `3px solid #ddd`,
+                                    }}>
+                                      <div style={{fontSize:"11px",color:"#7aaa88",fontWeight:"600",marginBottom:"4px"}}>
+                                        Q{qi+1}: {q.en}
+                                      </div>
+                                      <div style={{
+                                        fontSize:"13px",lineHeight:"1.5",
+                                        color: a && a.trim() ? "#1a3a26" : "#bbb",
+                                        fontStyle: a && a.trim() ? "normal" : "italic",
+                                      }}>
+                                        {a && a.trim() ? a : "(skipped)"}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
 
-                          {orphanItems.length > 0 && (
-                            <div style={{
-                              marginTop:"6px",padding:"10px 12px",
-                              background:"#fff8f0",border:`1px dashed #fcc`,borderRadius:"8px",
-                            }}>
-                              <div style={{fontSize:"10px",color:"#c0620b",fontWeight:"700",letterSpacing:"1px",textTransform:"uppercase",marginBottom:"6px"}}>
-                                Orphan answers (questions deleted from survey)
-                              </div>
-                              {orphanItems.map(o => (
-                                <div key={o.qId} style={{marginBottom:"6px"}}>
-                                  <div style={{fontSize:"11px",color:"#7aaa88"}}>{o.text}</div>
-                                  <div style={{fontSize:"13px",color:"#3a5a46"}}>{o.answer}</div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
+                                {orphanItems.length > 0 && (
+                                  <div style={{
+                                    marginTop:"6px",padding:"10px 12px",
+                                    background:"#fff8f0",border:`1px dashed #fcc`,borderRadius:"8px",
+                                  }}>
+                                    <div style={{fontSize:"10px",color:"#c0620b",fontWeight:"700",letterSpacing:"1px",textTransform:"uppercase",marginBottom:"6px"}}>
+                                      Orphan answers (deleted questions)
+                                    </div>
+                                    {orphanItems.map(o => (
+                                      <div key={o.qId} style={{marginBottom:"6px"}}>
+                                        <div style={{fontSize:"11px",color:"#7aaa88"}}>{o.text}</div>
+                                        <div style={{fontSize:"13px",color:"#3a5a46"}}>{o.answer || "(skipped)"}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
